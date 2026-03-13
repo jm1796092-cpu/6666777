@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import toast, { Toaster } from "react-hot-toast";
 import PptxGenJS from "pptxgenjs";
+import { formatDate, getCurrentDate, saveToLocalStorage, loadFromLocalStorage, removeFromLocalStorage } from "../utils/helpers";
 
 interface Slide {
   type: "cover" | "directory" | "content" | "end";
@@ -22,6 +23,14 @@ interface Template {
   titleColor: string;
   contentColor: string;
   previewBg: string;
+}
+
+interface HistoryItem {
+  id: number;
+  theme: string;
+  slideCount: number;
+  template: string;
+  timestamp: string;
 }
 
 const TEMPLATES: Template[] = [
@@ -57,6 +66,11 @@ const TEMPLATES: Template[] = [
   }
 ];
 
+const STORAGE_KEYS = {
+  HISTORY: 'ppt_history',
+  TEMPLATE: 'active_template'
+} as const;
+
 const generateSlideContent = (theme: string, pageCount: number) => {
   const slides: any[] = [];
   
@@ -68,9 +82,7 @@ const generateSlideContent = (theme: string, pageCount: number) => {
     ? `关于${theme}的主题演讲`
     : `${theme}：深度解析报告`;
   
-  const today = new Date();
-  const dateStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-  
+  const dateStr = getCurrentDate();
   const middleCount = Math.max(pageCount, 1);
   
   slides.push({
@@ -112,42 +124,102 @@ const generateSlideContent = (theme: string, pageCount: number) => {
   return slides;
 };
 
+const generatePPT = async (slides: any[], activeTemplate: string, input: string) => {
+  const pptx = new PptxGenJS();
+  const template = TEMPLATES.find(t => t.id === activeTemplate) || TEMPLATES[0];
+  
+  slides.forEach((slide) => {
+    const slideObj = pptx.addSlide();
+    
+    if (slide.type === "cover") {
+      slideObj.background = { color: template.coverBg };
+      slideObj.addText(slide.title, {
+        x: 0.5, y: 2, w: 9, h: 1.5, fontSize: 36, bold: true, color: template.coverText, align: "center"
+      });
+      slideObj.addText(slide.subtitle, {
+        x: 0.5, y: 3.5, w: 9, h: 0.6, fontSize: 18, color: template.coverText, align: "center"
+      });
+      slideObj.addText(slide.content, {
+        x: 0.5, y: 4.5, w: 9, h: 0.8, fontSize: 14, color: template.coverText, align: "center"
+      });
+      if (slide.date) {
+        slideObj.addText(slide.date, {
+          x: 0.5, y: 5.6, w: 9, h: 0.4, fontSize: 12, color: template.coverText, align: "center"
+        });
+      }
+    } else if (slide.type === "directory") {
+      slideObj.background = { color: "FFFFFF" };
+      slideObj.addText(slide.title, {
+        x: 0.5, y: 0.5, w: 9, h: 0.8, fontSize: 28, bold: true, color: template.titleColor, align: "center"
+      });
+      const content = Array.isArray(slide.content) ? slide.content : [slide.content];
+      content.forEach((item: string, i: number) => {
+        slideObj.addText(item, {
+          x: 1.5, y: 1.5 + i * 0.6, w: 7, h: 0.5, fontSize: 16, color: template.contentColor
+        });
+      });
+    } else if (slide.type === "content") {
+      slideObj.background = { color: "FFFFFF" };
+      slideObj.addText(slide.title, {
+        x: 0.5, y: 0.5, w: 9, h: 0.8, fontSize: 28, bold: true, color: template.titleColor, align: "center"
+      });
+      if (slide.slideNumber) {
+        slideObj.addText(`第 ${slide.slideNumber} 页`, {
+          x: 8.5, y: 0.3, w: 1, h: 0.3, fontSize: 10, color: "#999999", align: "right"
+        });
+      }
+      const content = Array.isArray(slide.content) ? slide.content : [slide.content];
+      content.forEach((item: string, i: number) => {
+        slideObj.addText(item, {
+          x: 0.8, y: 1.5 + i * 0.5, w: 8.4, h: 0.4, fontSize: 14, color: template.contentColor
+        });
+      });
+    } else if (slide.type === "end") {
+      slideObj.background = { color: template.coverBg };
+      slideObj.addText(slide.title, {
+        x: 0.5, y: 2, w: 9, h: 1.5, fontSize: 32, bold: true, color: template.coverText, align: "center"
+      });
+      slideObj.addText(slide.content, {
+        x: 0.5, y: 3.8, w: 9, h: 1.8, fontSize: 16, color: template.coverText, align: "center"
+      });
+      if (slide.date) {
+        slideObj.addText(slide.date, {
+          x: 0.5, y: 5.8, w: 9, h: 0.4, fontSize: 12, color: template.coverText, align: "center"
+        });
+      }
+    }
+  });
+  
+  await pptx.writeFile({ fileName: `${input}.pptx` });
+};
+
 export default function Home() {
   const [input, setInput] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [slideCount, setSlideCount] = useState(5);
   const [activeTemplate, setActiveTemplate] = useState("business-blue");
-  const [history, setHistory] = useState<any[]>([]);
+  const [history, setHistory] = useState<HistoryItem[]>([]);
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
     setMounted(true);
-    if (typeof window !== 'undefined') {
-      const savedHistory = localStorage.getItem('ppt_history');
-      if (savedHistory) {
-        try {
-          setHistory(JSON.parse(savedHistory));
-        } catch (e) {
-          console.error('Failed to parse history:', e);
-        }
-      }
-      
-      const savedTemplate = localStorage.getItem('active_template');
-      if (savedTemplate) {
-        setActiveTemplate(savedTemplate);
-      }
+    const savedHistory = loadFromLocalStorage<HistoryItem[]>(STORAGE_KEYS.HISTORY, []);
+    setHistory(savedHistory);
+    const savedTemplate = loadFromLocalStorage<string>(STORAGE_KEYS.TEMPLATE, "business-blue");
+    if (savedTemplate) {
+      setActiveTemplate(savedTemplate);
     }
   }, []);
 
   useEffect(() => {
-    if (mounted && typeof window !== 'undefined') {
-      localStorage.setItem('ppt_history', JSON.stringify(history));
+    if (mounted) {
+      saveToLocalStorage(STORAGE_KEYS.HISTORY, history);
     }
   }, [history, mounted]);
 
   useEffect(() => {
-    if (mounted && typeof window !== 'undefined') {
-      localStorage.setItem('active_template', activeTemplate);
+    if (mounted) {
+      saveToLocalStorage(STORAGE_KEYS.TEMPLATE, activeTemplate);
     }
   }, [activeTemplate, mounted]);
 
@@ -162,9 +234,9 @@ export default function Home() {
     
     try {
       const slides = generateSlideContent(input, slideCount);
-      await generatePPT(slides);
+      await generatePPT(slides, activeTemplate, input);
       
-      const newHistoryItem = {
+      const newHistoryItem: HistoryItem = {
         id: Date.now(),
         theme: input,
         slideCount: slides.length,
@@ -185,168 +257,11 @@ export default function Home() {
     }
   };
 
-  const generatePPT = async (slides: any[]) => {
-    const pptx = new PptxGenJS();
-    const template = TEMPLATES.find(t => t.id === activeTemplate) || TEMPLATES[0];
-    
-    slides.forEach((slide, index) => {
-      const slideObj = pptx.addSlide();
-      
-      if (slide.type === "cover") {
-        slideObj.background = { color: template.coverBg };
-        
-        slideObj.addText(slide.title, {
-          x: 0.5,
-          y: 2,
-          w: 9,
-          h: 1.5,
-          fontSize: 36,
-          bold: true,
-          color: template.coverText,
-          align: "center"
-        });
-        
-        slideObj.addText(slide.subtitle, {
-          x: 0.5,
-          y: 3.5,
-          w: 9,
-          h: 0.6,
-          fontSize: 18,
-          color: template.coverText,
-          align: "center"
-        });
-        
-        slideObj.addText(slide.content, {
-          x: 0.5,
-          y: 4.5,
-          w: 9,
-          h: 0.8,
-          fontSize: 14,
-          color: template.coverText,
-          align: "center"
-        });
-        
-        if (slide.date) {
-          slideObj.addText(slide.date, {
-            x: 0.5,
-            y: 5.6,
-            w: 9,
-            h: 0.4,
-            fontSize: 12,
-            color: template.coverText,
-            align: "center"
-          });
-        }
-      } else if (slide.type === "directory") {
-        slideObj.background = { color: "FFFFFF" };
-        
-        slideObj.addText(slide.title, {
-          x: 0.5,
-          y: 0.5,
-          w: 9,
-          h: 0.8,
-          fontSize: 28,
-          bold: true,
-          color: template.titleColor,
-          align: "center"
-        });
-        
-        const content = Array.isArray(slide.content) ? slide.content : [slide.content];
-        content.forEach((item: string, i: number) => {
-          slideObj.addText(item, {
-            x: 1.5,
-            y: 1.5 + i * 0.6,
-            w: 7,
-            h: 0.5,
-            fontSize: 16,
-            color: template.contentColor
-          });
-        });
-      } else if (slide.type === "content") {
-        slideObj.background = { color: "FFFFFF" };
-        
-        slideObj.addText(slide.title, {
-          x: 0.5,
-          y: 0.5,
-          w: 9,
-          h: 0.8,
-          fontSize: 28,
-          bold: true,
-          color: template.titleColor,
-          align: "center"
-        });
-        
-        if (slide.slideNumber) {
-          slideObj.addText(`第 ${slide.slideNumber} 页`, {
-            x: 8.5,
-            y: 0.3,
-            w: 1,
-            h: 0.3,
-            fontSize: 10,
-            color: "#999999",
-            align: "right"
-          });
-        }
-        
-        const content = Array.isArray(slide.content) ? slide.content : [slide.content];
-        content.forEach((item: string, i: number) => {
-          slideObj.addText(item, {
-            x: 0.8,
-            y: 1.5 + i * 0.5,
-            w: 8.4,
-            h: 0.4,
-            fontSize: 14,
-            color: template.contentColor
-          });
-        });
-      } else if (slide.type === "end") {
-        slideObj.background = { color: template.coverBg };
-        
-        slideObj.addText(slide.title, {
-          x: 0.5,
-          y: 2,
-          w: 9,
-          h: 1.5,
-          fontSize: 32,
-          bold: true,
-          color: template.coverText,
-          align: "center"
-        });
-        
-        slideObj.addText(slide.content, {
-          x: 0.5,
-          y: 3.8,
-          w: 9,
-          h: 1.8,
-          fontSize: 16,
-          color: template.coverText,
-          align: "center"
-        });
-        
-        if (slide.date) {
-          slideObj.addText(slide.date, {
-            x: 0.5,
-            y: 5.8,
-            w: 9,
-            h: 0.4,
-            fontSize: 12,
-            color: template.coverText,
-            align: "center"
-          });
-        }
-      }
-    });
-    
-    await pptx.writeFile({ fileName: `${input}.pptx` });
-  };
-
-  const handleLoadHistory = (item: any) => {
+  const handleLoadHistory = (item: HistoryItem) => {
     setInput(item.theme);
     setSlideCount(item.slideCount);
     setActiveTemplate(item.template);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('active_template', item.template);
-    }
+    saveToLocalStorage(STORAGE_KEYS.TEMPLATE, item.template);
     toast.success(`✅ 已加载历史记录：${item.theme}`);
   };
 
@@ -359,23 +274,6 @@ export default function Home() {
   const handleClearHistory = () => {
     setHistory([]);
     toast.success("已清空历史记录");
-  };
-
-  const formatDate = (timestamp: string) => {
-    const date = new Date(timestamp);
-    const now = new Date();
-    const diff = now.getTime() - date.getTime();
-    const hours = Math.floor(diff / (1000 * 60 * 60));
-    const days = Math.floor(hours / 24);
-
-    if (days > 0) {
-      return `${days}天前`;
-    } else if (hours > 0) {
-      return `${hours}小时前`;
-    } else {
-      const minutes = Math.floor(diff / (1000 * 60));
-      return minutes > 0 ? `${minutes}分钟前` : '刚刚';
-    }
   };
 
   if (!mounted) {
