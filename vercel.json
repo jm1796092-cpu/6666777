@@ -1,15 +1,6 @@
 {
-  "version": 2,
-  "builds": [
-    {
-      "src": "app/page.tsx",
-      "use": "@vercel/next"
-    }
-  ],
-  "routes": [
-    {
-      "src": "app/page.tsx",
-      "dest": "/"
-    }
-  ]
+  "buildCommand": "npm run build",
+  "outputDirectory": ".next",
+  "framework": "nextjs",
+  "regions": ["hkg1"]
 }
